@@ -1,0 +1,5 @@
+datacockpit>=0.1.0
+sqlalchemy>=1.1.1
+matplotlib>=3.6.3
+pandas>=1.5.3
+duckdb>=0.6.1
