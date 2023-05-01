@@ -25,7 +25,8 @@ class DataCockpit:
         :return: None
         """
         self.engine         = engine
-        self.conn           = engine.raw_connection()
+        # self.conn           = engine.raw_connection()
+        self.conn           = engine.connect()
         self.path_to_logs   = path_to_logs
         logging.basicConfig(level=logging.ERROR)
 
@@ -81,11 +82,11 @@ class DataCockpit:
         db_name = self.engine.url.database
         quality_obj = Quality(self.conn)
         quality_obj.calculate_metrics(db_name, log_to_csv=log_to_csv)
-        
+
     def get_quality(self) -> tuple([pd.DataFrame, pd.DataFrame]):
         """Return attribute and record metric tables as pd dataframes
         """
-        
+
         quality_obj = Quality(self.conn)
         attribute_metric_table, record_metric_table = quality_obj.get_metric_tables()
 
