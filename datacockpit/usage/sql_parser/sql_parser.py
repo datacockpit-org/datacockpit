@@ -58,6 +58,8 @@ def jsonify_dict(sql_dict):
     res = []
     for table, attributes in sql_dict.items():
         inner_json = {}
+        if not table:  # derived attributes are not associated with any tables
+            table = "QUERY"
         inner_json["dataset"] = table
         inner_json["attributes"] = attributes
         res.append(inner_json)
