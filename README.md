@@ -123,6 +123,15 @@ DataCockpit can be installed as a Python package and imported in your own awesom
 
 <br/>
 
+## Analysis
+
+Look at [assets](https://github.com/datacockpit-org/datacockpit/tree/review/assets/notebooks) for
+examples of how to use the metrics obtained, such as visualizing the temporal trends in data
+or finding the most critical attributes.
+
+<br/>
+
+
 ## Credits
 DataCockpit was created by Arpit Narechania, Fan Du, Atanu R. Sinha, Ryan A. Rossi, Jane Hoffswell, Shunan Guo, Eunyee Koh, Surya Chakraborty, Shivam Agarwal, Shamkant B. Navathe, and Alex Endert.
 
