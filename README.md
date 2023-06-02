@@ -29,7 +29,7 @@ from datacockpit import DataCockpit
 
 # Setup database connection with SQL engine and log-file CSV
 dcp_obj = DataCockpit(engine=your_sqlalchemy_engine,
-        logs_path="your/logs/path.csv")
+        path_to_logs="your/logs/path.csv")
 
 # Compute and persist quality & usage metrics
 dcp_obj.compute_quality(levels=None, metrics=None)
@@ -108,7 +108,7 @@ DataCockpit can be installed as a Python package and imported in your own awesom
 
 - DataCockpit is written in Python 3. Please ensure you have a Python 3 environment already installed.
 - Clone this repository (review branch) and enter (`cd`) into it.
-- Create a new virtual environment, `virtualenv --python=python3 venv`
+- Create a new virtual environment, `python3 -m venv venv` or `virtualenv --python=python3 venv`.
 - Activate it using, `source venv/bin/activate` (MacOSX/Linux) or `venv\Scripts\activate.bat` (Windows)
 - Install dependencies, `python -m pip install -r requirements.txt`
 - \<make your changes\>
@@ -120,6 +120,8 @@ DataCockpit can be installed as a Python package and imported in your own awesom
 >>> from datacockpit import DataCockpit
 ```
 - Enjoy, DataCockpit is now available for use as a Python package!
+
+Check out `demo.py` to test this out on a local sqlite3 server.
 
 <br/>
 
