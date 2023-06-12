@@ -26,7 +26,7 @@ class Quality:
                           " timestamp, uniqueness, completeness, correctness, overall)")
         self.conn.execute("CREATE TABLE IF NOT EXISTS record_metrics" +
                           "(db_name text, table_name text, primary_key text, timestamp" +
-                          " timestamp, uniqueness, completeness, correctness, overall)")
+                          " timestamp, uniqueness, completeness, correctness, freshness, overall)")
 
         # Get a list of tables in the db
         cursor = self.conn.execute(
@@ -58,10 +58,16 @@ class Quality:
             cursor = self.conn.execute("SELECT tn.name FROM pragma_table_info('" +
                                        table_name + "') as tn WHERE tn.pk = 1;")
             primary_key = [x[0] for x in cursor.fetchall()][0]
+
+			# Calculating the freshness in place
+			# TODO: Check if created_at column exists for a table, if not supply defaults
             self.conn.execute("INSERT INTO record_metrics SELECT '" + db_name +
                               "' AS db_name, '" + table_name + "' AS table_name, " + primary_key +
                               " AS primary_key, '" + timestamp +
-                              "' AS timestamp, 0, 0, 0, 0  from " + table_name)
+                              "' AS timestamp, 0, 0, 0, " +
+                              " CASE WHEN 100 - ((strftime('%s', 'now') - strftime('%s', created_at)) / 3600 ) < 0 THEN 0 ELSE 100 - ((strftime('%s', 'now') - strftime('%s', created_at)) / 3600 ) END, " + \
+							  " 0  from " + table_name)
+
         for table_name in tables:
             # Get table attribute names
             query = "SELECT * FROM " + table_name + " LIMIT 1"
@@ -85,10 +91,10 @@ class Quality:
             )
 
             if not constraints:
-                # Default example constraint: Ensure that attribute values are not -3
+                # Default example constraint: Ensure that attribute values are not negative
                 constraints = []
                 for _ in range(len(attribute_names)):
-                    constraints += [['IS NOT "-3"']]
+                    constraints += [['IS NOT "<0"']]
             self.generate_record_correctness(
                 constraints, db_name, table_name, primary_key, timestamp)
             self.generate_record_redundancy(
@@ -469,8 +475,7 @@ class Quality:
         for metric in self.metrics:
             record_overall_query += metric + " + "
 
-        record_overall_query = record_overall_query[:-
-                                                    2] + ") / " + str(len(self.metrics))
+        record_overall_query = record_overall_query[:-2] + ") / " + str(len(self.metrics))
 
         self.conn.execute(record_overall_query)
 
