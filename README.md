@@ -24,6 +24,7 @@ Installing DataPilot is as simple as making microwave popcorn! Just `pip install
 <br/>
 
 ## How to Use
+
 ```python
 from datacockpit import DataCockpit
 
@@ -49,6 +50,8 @@ usage_info = dcp_obj.get_usage()
 ```
 
 Depending on your data and query patterns, the `get_quality()` and `get_usage()` functions will return the following quality and usage information.
+
+**Look at `demo.py` for a quick and easy reference to give the toolkit a spin.**
 
 <br/>
 
