@@ -1,451 +1,489 @@
 import sqlalchemy
 import sqlite3
 import csv
-from tabulate import tabulate
 import datetime
 from typing import List
 import logging
 import pandas as pd
 
+
 class Quality:
-	def __init__(self, conn: sqlalchemy.engine.Connection):
-		self.conn   = conn
-		self.metrics = ["completeness", "correctness"]
+    def __init__(self, conn: sqlalchemy.engine.Connection):
+        self.conn = conn
+        self.metrics = ["completeness", "correctness"]
 
+    def calculate_metrics(self, db_name, constraints: List[List] = None,
+                          log_to_csv: bool = False):
 
-	def calculate_metrics(self, db_name, constraints: List[List] = None,
-		log_to_csv: bool=False):
+        print("Please wait. This might take a few minutes")
 
-		print("Please wait. This might take a few minutes")
+        self.conn.execute("DROP TABLE IF EXISTS attribute_metrics")
+        self.conn.execute("DROP TABLE IF EXISTS record_metrics")
 
-		self.conn.execute("DROP TABLE attribute_metrics")
-		self.conn.execute("DROP TABLE record_metrics")
-		
-		#Create metric tables
-		self.conn.execute("CREATE TABLE IF NOT EXISTS attribute_metrics" + \
-			"(db_name text, table_name text, attribute_name text, timestamp" + \
-			" timestamp, uniqueness, completeness, correctness, overall)")
-		self.conn.execute("CREATE TABLE IF NOT EXISTS record_metrics" + \
-			"(db_name text, table_name text, primary_key text, timestamp" + \
-			" timestamp, uniqueness, completeness, correctness, overall)")
+        # Create metric tables
+        self.conn.execute("CREATE TABLE IF NOT EXISTS attribute_metrics" +
+                          "(db_name text, table_name text, attribute_name text, timestamp" +
+                          " timestamp, uniqueness, completeness, correctness, overall)")
+        self.conn.execute("CREATE TABLE IF NOT EXISTS record_metrics" +
+                          "(db_name text, table_name text, primary_key text, timestamp" +
+                          " timestamp, uniqueness, completeness, correctness, freshness, overall)")
 
-		# Get a list of tables in the db
-		cursor = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
-		tables = [x[0] for x in cursor.fetchall()]
+        # Get a list of tables in the db
+        cursor = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table';")
+        tables = [x[0] for x in cursor.fetchall()]
 
-		# Remove metric tables from the list of tables to analyze
-		tables_to_ignore = ["attribute_metrics", "record_metrics", "dcp_metadata", "dcp_aggr", "dcp_dataset_usage"]
-		for table_to_ignore in tables_to_ignore:
-			tables.remove(table_to_ignore)
+        # Remove metric tables from the list of tables to analyze
+        tables_to_ignore = ["attribute_metrics", "record_metrics",
+                            "dcp_metadata", "dcp_aggr", "dcp_dataset_usage"]
+        for table_to_ignore in tables_to_ignore:
+            if table_to_ignore in tables:
+                tables.remove(table_to_ignore)
 
-		current_date_time = datetime.datetime.now()
-		timestamp = str(current_date_time)[:19]  # Get ts string with sql parseable format
+        current_date_time = datetime.datetime.now()
+        # Get ts string with sql parseable format
+        timestamp = str(current_date_time)[:19]
+        self.generate_attribute_metrics(
+            db_name, constraints, tables, timestamp)
+        self.generate_record_metrics(db_name, constraints, tables, timestamp)
 
-		self.generate_attribute_metrics(db_name, constraints, tables, timestamp)
-		self.generate_record_metrics(db_name, constraints, tables, timestamp)
+        if log_to_csv:
+            self._log_to_csv()
 
-		if log_to_csv:
-			self._log_to_csv()
+        self.conn.commit()
 
-		self.conn.commit()
+    def generate_record_metrics(self, db_name, constraints, tables, timestamp):
+        # Create an entry for each record of every table in db, in the record metrics table
+        for table_name in tables:
+            cursor = self.conn.execute("SELECT tn.name FROM pragma_table_info('" +
+                                       table_name + "') as tn WHERE tn.pk = 1;")
+            primary_key = [x[0] for x in cursor.fetchall()][0]
 
-	def generate_record_metrics(self, db_name, constraints, tables, timestamp):
-		# Create an entry for each record of every table in db, in the record metrics table
-		for table_name in tables:
-			cursor = self.conn.execute("SELECT tn.name FROM pragma_table_info('" + \
-				table_name + "') as tn WHERE tn.pk = 1;")
-			primary_key = [x[0] for x in cursor.fetchall()][0]
-			self.conn.execute("INSERT INTO record_metrics SELECT '"+ db_name + \
-				"' AS db_name, '" + table_name + "' AS table_name, " + primary_key + \
-				" AS primary_key, '" + timestamp + \
-				"' AS timestamp, 0, 0, 0, 0  from " + table_name)
-		for table_name in tables:
-			# Get table attribute names
-			query = "SELECT * FROM " + table_name + " LIMIT 1"
-			cursor = self.conn.execute(query)
-			attribute_names = [description[0] for description in cursor.description]
+			# Calculating the freshness in place
+			# TODO: Check if created_at column exists for a table, if not supply defaults
+            self.conn.execute("INSERT INTO record_metrics SELECT '" + db_name +
+                              "' AS db_name, '" + table_name + "' AS table_name, " + primary_key +
+                              " AS primary_key, '" + timestamp +
+                              "' AS timestamp, 0, 0, 0, " +
+                              " CASE WHEN 100 - ((strftime('%s', 'now') - strftime('%s', created_at)) / 3600 ) < 0 THEN 0 ELSE 100 - ((strftime('%s', 'now') - strftime('%s', created_at)) / 3600 ) END, " + \
+							  " 0  from " + table_name)
 
-			null_values = []
-			for _ in range(len(attribute_names)):
-				null_values += [["''", "'None'", "'NULL'"]] # TODO: Account for cols
-						# with no null condition
+        for table_name in tables:
+            # Get table attribute names
+            query = "SELECT * FROM " + table_name + " LIMIT 1"
+            cursor = self.conn.execute(query)
+            attribute_names = [description[0]
+                               for description in cursor.description]
 
-			primary_key = "serial_no"
-			cursor = self.conn.execute("SELECT tn.name FROM pragma_table_info('" + table_name + "') as tn WHERE tn.pk = 1;")
-			primary_key = [x[0] for x in cursor.fetchall()][0]
+            null_values = []
+            for _ in range(len(attribute_names)):
+                # TODO: Account for cols
+                null_values += [["''", "'None'", "'NULL'"]]
+                # with no null condition
 
-			self.generate_record_completeness(
-				null_values, db_name, table_name, primary_key, timestamp
-			)
+            primary_key = "serial_no"
+            cursor = self.conn.execute(
+                "SELECT tn.name FROM pragma_table_info('" + table_name + "') as tn WHERE tn.pk = 1;")
+            primary_key = [x[0] for x in cursor.fetchall()][0]
 
-			if not constraints:
-				# Default example constraint: Ensure that attribute values are not -3
-				constraints = []
-				for _ in range(len(attribute_names)):
-					constraints += [['IS NOT "-3"']]
-			self.generate_record_correctness(constraints, db_name, table_name, primary_key, timestamp)
-			self.generate_record_redundancy(db_name, table_name, primary_key, timestamp)
-			self.generate_record_overall()
+            self.generate_record_completeness(
+                null_values, db_name, table_name, primary_key, timestamp
+            )
 
-	def generate_attribute_metrics(self, db_name, constraints, tables, timestamp):
-		for table_name in tables:
-			query = "SELECT * FROM " + table_name + " LIMIT 1"
-			cursor = self.conn.execute(query)
+            if not constraints:
+                # Default example constraint: Ensure that attribute values are not negative
+                constraints = []
+                for _ in range(len(attribute_names)):
+                    constraints += [['IS NOT "<0"']]
+            self.generate_record_correctness(
+                constraints, db_name, table_name, primary_key, timestamp)
+            self.generate_record_redundancy(
+                db_name, table_name, primary_key, timestamp)
+            self.generate_record_overall()
 
-			# Get attribute names from the table
-			attribute_names = [description[0] for description in cursor.description]
+    def generate_attribute_metrics(self, db_name, constraints, tables, timestamp):
+        for table_name in tables:
+            query = "SELECT * FROM " + table_name + " LIMIT 1"
+            cursor = self.conn.execute(query)
 
-					# Create an entry for each attribute in the metrics table
-			for attribute_name in attribute_names:
-				query = "INSERT INTO attribute_metrics (db_name, table_name, " + \
-							"attribute_name, timestamp, completeness, correctness, uniqueness)" + \
-							" VALUES( '" + db_name + "', '" + table_name + "', '" + attribute_name + \
-							"', '" + timestamp +  "', 0, 0, 0);"
-				self.conn.execute(query)
+            # Get attribute names from the table
+            attribute_names = [description[0]
+                               for description in cursor.description]
 
-			null_values = []
+            # Create an entry for each attribute in the metrics table
+            for attribute_name in attribute_names:
+                query = "INSERT INTO attribute_metrics (db_name, table_name, " + \
+                    "attribute_name, timestamp, completeness, correctness, uniqueness)" + \
+                    " VALUES( '" + db_name + "', '" + table_name + "', '" + attribute_name + \
+                    "', '" + timestamp + "', 0, 0, 0);"
+                self.conn.execute(query)
 
-			for _ in range(len(attribute_names)):
-				null_values += [["''", "'None'", "'NULL'"]]  # TODO: Account for cols
-						# with no null condition
+            null_values = []
 
-			# Call attribute completeness function
-			self.generate_attribute_completeness(null_values, db_name, table_name, timestamp)
+            for _ in range(len(attribute_names)):
+                # TODO: Account for cols
+                null_values += [["''", "'None'", "'NULL'"]]
+                # with no null condition
 
-			if not constraints:
-				# Default example constraint: Ensure that attribute values are not -3
-				constraints = []
-				for _ in range(len(attribute_names)):
-					constraints += [['IS NOT "0"']]
+            # Call attribute completeness function
+            self.generate_attribute_completeness(
+                null_values, db_name, table_name, timestamp)
 
-			# Call attribute correctness function
-			self.generate_attribute_correctness(constraints, db_name, table_name, timestamp)
+            if not constraints:
+                # Default example constraint: Ensure that attribute values are not -3
+                constraints = []
+                for _ in range(len(attribute_names)):
+                    constraints += [['IS NOT "0"']]
 
-			# Call attribute redundancy function
-			self.generate_attribute_redundancy(db_name, table_name, timestamp)
+            # Call attribute correctness function
+            self.generate_attribute_correctness(
+                constraints, db_name, table_name, timestamp)
 
-			self.generate_attribute_overall()
+            # Call attribute redundancy function
+            self.generate_attribute_redundancy(db_name, table_name, timestamp)
 
-	def _log_to_csv(self):
-		csvWriter = csv.writer(open("quality_attribute.csv", "w"))
+            self.generate_attribute_overall()
 
-				# Write headers to the csv
-		cursor = self.conn.execute("SELECT * FROM  attribute_metrics  LIMIT 1")
-		headers = [description[0] for description in cursor.description]
-		csvWriter.writerow(headers)
+    def _log_to_csv(self):
+        csvWriter = csv.writer(open("quality_attribute.csv", "w"))
 
-		cursor = self.conn.execute("SELECT * FROM attribute_metrics")
-		rows = cursor.fetchall()
-		for row in rows:
-			csvWriter.writerow(row)
+        # Write headers to the csv
+        cursor = self.conn.execute("SELECT * FROM  attribute_metrics  LIMIT 1")
+        headers = [description[0] for description in cursor.description]
+        csvWriter.writerow(headers)
 
-		csvWriter = csv.writer(open("quality_record.csv", "w"))
+        cursor = self.conn.execute("SELECT * FROM attribute_metrics")
+        rows = cursor.fetchall()
+        for row in rows:
+            csvWriter.writerow(row)
 
-				#Write headers to the csv
-		cursor = self.conn.execute("SELECT * FROM  record_metrics  LIMIT 1")
-		headers = [description[0] for description in cursor.description]
-		csvWriter.writerow(headers)
+        csvWriter = csv.writer(open("quality_record.csv", "w"))
 
-		cursor = self.conn.execute("SELECT * FROM record_metrics")
-		rows = cursor.fetchall()
-		for row in rows:
-			csvWriter.writerow(row)
+        # Write headers to the csv
+        cursor = self.conn.execute("SELECT * FROM  record_metrics  LIMIT 1")
+        headers = [description[0] for description in cursor.description]
+        csvWriter.writerow(headers)
 
+        cursor = self.conn.execute("SELECT * FROM record_metrics")
+        rows = cursor.fetchall()
+        for row in rows:
+            csvWriter.writerow(row)
 
-		#################################################################################
-		#################################################################################
+        #################################################################################
+        #################################################################################
 
-	#Attribute completeness Query
-    #null_values is a 2d list containing a list of acceptable null values for each attribute.
+    # Attribute completeness Query
+    # null_values is a 2d list containing a list of acceptable null values for each attribute.
     # The list for an attribute may be empty
 
-	def generate_attribute_completeness(self, null_values, db_name, table_name, timestamp):
-		query = "SELECT * FROM " + table_name + " LIMIT 1"
+    def generate_attribute_completeness(self, null_values, db_name, table_name, timestamp):
+        query = "SELECT * FROM " + table_name + " LIMIT 1"
+
+        cursor = self.conn.execute(query)
+
+        attribute_names = [description[0]
+                           for description in cursor.description]
+
+        attribute_null_values = {}
+        for i in range(len(attribute_names)):
+            attribute_null_values[attribute_names[i]] = null_values[i]
+
+        logging.debug(attribute_names)
+
+        # Query to get the completeness of each attribute
+        attribute_completeness_query = "SELECT "
+        for attribute in attribute_names:
+            attribute_null = attribute_null_values[attribute]
+            # attribute_completeness_query += "CAST((SELECT COUNT(*) FROM journals WHERE " + attribute + " != '') AS FLOAT) * 100 / CAST(COUNT(*) AS FLOAT) AS '" + attribute + "', "
+            if (len(attribute_null) > 0):
+                attribute_completeness_query += "CAST((SELECT COUNT(*) FROM " + \
+                    table_name + " WHERE "
+                for null_value in attribute_null:
+                    attribute_completeness_query += attribute + " != " + null_value + " AND "
+
+                attribute_completeness_query = attribute_completeness_query[:-4]
+                attribute_completeness_query += ") AS FLOAT) * 100 / CAST(COUNT(*) AS FLOAT) AS '" + \
+                    attribute + "', "
+
+        attribute_completeness_query = attribute_completeness_query[:-2]
+        attribute_completeness_query += " FROM " + table_name
+
+        logging.debug(attribute_completeness_query)
+
+    # Execute the query and fetch results into a variable
+        cursor = self.conn.execute(attribute_completeness_query)
+        attributes = [description[0] for description in cursor.description]
+        completeness_values = cursor.fetchall()
+
+    # Add completeness column to the quality metrics table, if does not exist. Adding done in the function to avoid adding null values for attributes during creation of table
+        try:
+            self.conn.execute(
+                "ALTER TABLE attribute_metrics ADD COLUMN completeness;")
+        except sqlite3.OperationalError:
+            # print("column already exists, do nothing")
+            pass
+
+    # Update the completeness value for each attribute in the tables
+        for i in range(len(attribute_names)):
+            query = "UPDATE attribute_metrics SET completeness = " + \
+                str(completeness_values[0][i]) + " WHERE db_name = '" + db_name + "' AND table_name = '" + \
+                table_name + "' AND attribute_name = '" + \
+                attributes[i] + "' AND timestamp = '" + timestamp + "';"
+            self.conn.execute(query)
+
+        cursor = self.conn.execute("SELECT * FROM attribute_metrics")
+
+    def generate_attribute_correctness(self, constraints, db_name, table_name, timestamp):
+        query = "SELECT * FROM " + table_name + " LIMIT 1"
+
+        cursor = self.conn.execute(query)
+
+        names = [description[0] for description in cursor.description]
+
+        attribute_constraint = {}
+        constraints = constraints * len(names)
+        for i in range(len(names)):
+            attribute_constraint[names[i]] = constraints[i]
+        attribute_correctness_query = "SELECT "
 
-		cursor = self.conn.execute(query)
+        for attribute in names:
+            attribute_constraints = attribute_constraint[attribute]
+            if (len(attribute_constraint) > 0):
+                attribute_correctness_query += "CAST(100 * CAST(SUM(CASE "
+                for constraint in attribute_constraints:
+                    attribute_correctness_query += "WHEN " + \
+                        attribute + " " + constraint + " THEN 1 "
+                attribute_correctness_query += "ELSE 0 END) AS FLOAT) / CAST((SELECT COUNT(*) FROM " + \
+                    table_name + " ) AS FLOAT) AS FLOAT) AS '" + attribute + "', "
 
-		attribute_names = [description[0] for description in cursor.description]
+        attribute_correctness_query = attribute_correctness_query[:-2]
+        attribute_correctness_query += " FROM " + table_name
+
+        cursor = self.conn.execute(attribute_correctness_query)
+        attributes = [description[0] for description in cursor.description]
+        correctness_values = cursor.fetchall()
+
+        try:
+            self.conn.execute(
+                "ALTER TABLE attribute_metrics ADD COLUMN correctness;")
+        except sqlite3.OperationalError:
+            # print("column already exists, do nothing")
+            pass
+
+        for i in range(len(names)):
+            query = "UPDATE attribute_metrics SET correctness = " + \
+                str(correctness_values[0][i]) + " WHERE db_name = '" + db_name + "' AND table_name = '" + \
+                table_name + "' AND attribute_name = '" + \
+                attributes[i] + "' AND timestamp = '" + timestamp + "';"
+            self.conn.execute(query)
+
+        cursor = self.conn.execute("SELECT * FROM attribute_metrics")
 
-		attribute_null_values = {}
-		for i in range(len(attribute_names)):
-			attribute_null_values[attribute_names[i]] = null_values[i]
-		
-		logging.debug(attribute_names)
+    def generate_attribute_redundancy(self, db_name, table_name, timestamp):
+        query = "SELECT * FROM " + table_name + " LIMIT 1"
 
+        cursor = self.conn.execute(query)
 
-		attribute_completeness_query = "SELECT "  #Query to get the completeness of each attribute
-		for attribute in attribute_names:
-			attribute_null = attribute_null_values[attribute]
-			#attribute_completeness_query += "CAST((SELECT COUNT(*) FROM journals WHERE " + attribute + " != '') AS FLOAT) * 100 / CAST(COUNT(*) AS FLOAT) AS '" + attribute + "', "
-			if(len(attribute_null) > 0):
-				attribute_completeness_query += "CAST((SELECT COUNT(*) FROM " + table_name + " WHERE "
-				for null_value in attribute_null:
-					attribute_completeness_query += attribute + " != " + null_value + " AND "
+        names = [description[0] for description in cursor.description]
 
-				attribute_completeness_query = attribute_completeness_query[:-4]
-				attribute_completeness_query += ") AS FLOAT) * 100 / CAST(COUNT(*) AS FLOAT) AS '" + attribute + "', "
+        attribute_redundancy_query = "SELECT "
 
-		attribute_completeness_query = attribute_completeness_query[:-2]
-		attribute_completeness_query += " FROM " + table_name
-		
-		logging.debug(attribute_completeness_query)
+        for attribute in names:
+            attribute_redundancy_query += "( COUNT(DISTINCT " + attribute + \
+                ")) * 100 /(CAST(COUNT(*) AS FLOAT)) AS " + attribute + ", "
 
-        #Execute the query and fetch results into a variable
-		cursor = self.conn.execute(attribute_completeness_query)
-		attributes = [description[0] for description in cursor.description]
-		completeness_values = cursor.fetchall()
-        # print(tabulate(completeness_values, headers=names, tablefmt='orgtbl'))
+        attribute_redundancy_query = attribute_redundancy_query[:-2]
+        attribute_redundancy_query += " FROM " + table_name
 
-        #Add completeness column to the quality metrics table, if does not exist. Adding done in the function to avoid adding null values for attributes during creation of table
-		try:
-			self.conn.execute("ALTER TABLE attribute_metrics ADD COLUMN completeness;")
-		except sqlite3.OperationalError:
-			# print("column already exists, do nothing")
-			pass
+        # print(attribute_redundancy_query)
 
-        #Update the completeness value for each attribute in the tables
-		for i in range(len(attribute_names)):
-			query = "UPDATE attribute_metrics SET completeness = " + str(completeness_values[0][i]) + " WHERE db_name = '" + db_name + "' AND table_name = '" + table_name + "' AND attribute_name = '" + attributes[i] + "' AND timestamp = '" + timestamp + "';"
-			self.conn.execute(query)
+        cursor = self.conn.execute(attribute_redundancy_query)
+        attributes = [description[0] for description in cursor.description]
+        redundancy_values = cursor.fetchall()
 
-		cursor = self.conn.execute("SELECT * FROM attribute_metrics")
+        try:
+            self.conn.execute(
+                "ALTER TABLE attribute_metrics ADD COLUMN uniqueness;")
+        except sqlite3.OperationalError:
+            # print("column already exists, do nothing")
+            pass
 
-        # print(tabulate(cursor.fetchall(), headers=['db_name', 'table_name', 'attribute_name', 'timestamp', 'completeness'], tablefmt='orgtbl'))
+        for i in range(len(names)):
+            query = "UPDATE attribute_metrics SET uniqueness = " + \
+                str(redundancy_values[0][i]) + " WHERE db_name = '" + db_name + "' AND table_name = '" + \
+                table_name + "' AND attribute_name = '" + \
+                attributes[i] + "' AND timestamp = '" + timestamp + "';"
+            # print(query)
+            self.conn.execute(query)
 
+        cursor = self.conn.execute("SELECT * FROM attribute_metrics")
 
-	def generate_attribute_correctness(self, constraints, db_name, table_name, timestamp):
-		query = "SELECT * FROM " + table_name + " LIMIT 1"
+        headers = [description[0] for description in cursor.description]
 
-		cursor = self.conn.execute(query)
+    def generate_attribute_overall(self):
+        try:
+            self.conn.execute(
+                "ALTER TABLE attribute_metrics ADD COLUMN overall;")
+        except sqlite3.OperationalError:
+            # print("column already exists, do nothing")
+            pass
 
-		names = [description[0] for description in cursor.description]
+        attribute_overall_query = "UPDATE attribute_metrics SET overall = ("
 
-		attribute_constraint = {}
-		for i in range(len(names)):
-			attribute_constraint[names[i]] = constraints[i]
+        for metric in self.metrics:
+            attribute_overall_query += metric + " + "
 
-		attribute_correctness_query = "SELECT "
+        attribute_overall_query = attribute_overall_query[:-2] + ") / " + str(
+            len(self.metrics))
 
-		for attribute in names:
-			attribute_constraints = attribute_constraint[attribute]
-			if (len(attribute_constraint) > 0):
-				attribute_correctness_query += "CAST(100 * CAST(SUM(CASE "
-				for constraint in attribute_constraints:
-					attribute_correctness_query += "WHEN " + attribute + " " + constraint + " THEN 1 "
-				attribute_correctness_query += "ELSE 0 END) AS FLOAT) / CAST((SELECT COUNT(*) FROM " + table_name + " ) AS FLOAT) AS FLOAT) AS '" + attribute + "', "
+        self.conn.execute(attribute_overall_query)
 
-		attribute_correctness_query = attribute_correctness_query[:-2]
-		attribute_correctness_query += " FROM " + table_name
+    def generate_record_completeness(self, null_values, db_name, table_name, primary_key, timestamp):
+        query = "SELECT * FROM " + table_name + " LIMIT 1"
 
-		cursor = self.conn.execute(attribute_correctness_query)
-		attributes = [description[0] for description in cursor.description]
-		correctness_values = cursor.fetchall()
+        cursor = self.conn.execute(query)
 
-		try:
-			self.conn.execute("ALTER TABLE attribute_metrics ADD COLUMN correctness;")
-		except sqlite3.OperationalError:
-			# print("column already exists, do nothing")
-			pass
+        names = [description[0] for description in cursor.description]
 
-		for i in range(len(names)):
-			query = "UPDATE attribute_metrics SET correctness = " + str(correctness_values[0][i]) + " WHERE db_name = '" + db_name + "' AND table_name = '" + table_name + "' AND attribute_name = '" + attributes[i] + "' AND timestamp = '" + timestamp + "';"
-			self.conn.execute(query)
+        attribute_null_values = {}
+        for i in range(len(names)):
+            attribute_null_values[names[i]] = null_values[i]
 
-		cursor = self.conn.execute("SELECT * FROM attribute_metrics")
+        record_completeness_query = "SELECT '" + db_name + "' AS db_name, '" + table_name + \
+            "' AS table_name, " + primary_key + " AS primary_key, '" + \
+            timestamp + "' AS timestamp, (CAST("
 
-        # print(tabulate(cursor.fetchall(), headers=['db_name', 'table_name', 'attribute_name', 'timestamp', 'completeness', 'correctness'], tablefmt='orgtbl'))
-	
-	def generate_attribute_redundancy(self, db_name, table_name, timestamp):
-		query = "SELECT * FROM " + table_name + " LIMIT 1"
+        for attribute in names:
+            attribute_null = attribute_null_values[attribute]
+            if (len(attribute_null) > 0):
+                record_completeness_query += "(CASE "
+                for null_value in attribute_null:
+                    record_completeness_query += "WHEN " + \
+                        attribute + " IS " + null_value + " THEN 0 "
+                record_completeness_query += "ELSE 1 END) + "
 
-		cursor = self.conn.execute(query)
+        record_completeness_query = record_completeness_query[:-2]
+        record_completeness_query += "AS FLOAT) * 100 / " + \
+            str(len(names)) + ") AS 'completeness' FROM " + table_name
+        record_completeness_query = "CREATE VIEW record_completeness AS " + \
+            record_completeness_query
 
-		names = [description[0] for description in cursor.description]
+        self.conn.execute(record_completeness_query)
 
-		attribute_redundancy_query = "SELECT "
+        try:
+            self.conn.execute(
+                "ALTER TABLE record_metrics ADD COLUMN completeness;")
+        except sqlite3.OperationalError:
+            # print("column already exists, do nothing")
+            pass
 
-		for attribute in names:
-			attribute_redundancy_query += "( COUNT(DISTINCT " + attribute + ")) * 100 /(CAST(COUNT(*) AS FLOAT)) AS " + attribute + ", "
+        self.conn.execute("UPDATE record_metrics SET completeness = ( SELECT record_completeness.completeness FROM record_completeness WHERE record_completeness.primary_key = record_metrics.primary_key AND record_completeness.db_name = record_metrics.db_name AND record_completeness.table_name = record_metrics.table_name AND record_completeness.timestamp = record_metrics.timestamp) WHERE primary_key IN (SELECT primary_key FROM record_completeness) AND db_name IN (SELECT db_name FROM record_completeness) AND table_name IN (SELECT table_name FROM record_completeness) AND timestamp IN (SELECT timestamp FROM record_completeness);")
+        self.conn.execute("DROP VIEW record_completeness;")
 
-		attribute_redundancy_query = attribute_redundancy_query[:-2]
-		attribute_redundancy_query += " FROM " + table_name
+        cursor = self.conn.execute("SELECT * FROM record_metrics")
 
-		# print(attribute_redundancy_query)
+        headers = [description[0] for description in cursor.description]
 
-		cursor = self.conn.execute(attribute_redundancy_query)
-		attributes = [description[0] for description in cursor.description]
-		redundancy_values = cursor.fetchall()
-		# print(tabulate(redundancy_values, headers=names, tablefmt='orgtbl'))
+    def generate_record_correctness(self, constraints, db_name, table_name, primary_key, timestamp):
+        query = "SELECT * FROM " + table_name + " LIMIT 1"
+        cursor = self.conn.execute(query)
+        names = [description[0] for description in cursor.description]
 
+        attribute_constraint = {}
+        constraints = constraints * len(names)
+        for i in range(len(names)):
+            attribute_constraint[names[i]] = constraints[i]
 
-		try:
-			self.conn.execute("ALTER TABLE attribute_metrics ADD COLUMN uniqueness;")
-		except sqlite3.OperationalError:
-			# print("column already exists, do nothing")
-			pass
+        record_correctness_query = "SELECT '" + db_name + "' AS db_name, '" + table_name + \
+            "' AS table_name, " + primary_key + " AS primary_key, '" + \
+            timestamp + "' AS timestamp, (CAST("
 
-		for i in range(len(names)):
-			query = "UPDATE attribute_metrics SET uniqueness = " + str(redundancy_values[0][i]) + " WHERE db_name = '" + db_name + "' AND table_name = '" + table_name + "' AND attribute_name = '" + attributes[i] + "' AND timestamp = '" + timestamp + "';"
-			# print(query)
-			self.conn.execute(query)
+        for attribute in names:
+            attribute_constraints = attribute_constraint[attribute]
+            if (len(attribute_constraint) > 0):
+                record_correctness_query += "(CASE "
+                for constraint in attribute_constraints:
+                    record_correctness_query += "WHEN " + attribute + " " + constraint + " THEN 1 "
+                record_correctness_query += "ELSE 0 END) + "
 
-		cursor = self.conn.execute("SELECT * FROM attribute_metrics")
+        record_correctness_query = record_correctness_query[:-2]
+        record_correctness_query += "AS FLOAT) * 100 / " + \
+            str(len(names)) + ") AS 'correctness' FROM " + table_name
+        record_correctness_query = "CREATE VIEW record_correctness AS " + \
+            record_correctness_query
 
-		headers = [description[0] for description in cursor.description]
+        cursor = self.conn.execute(record_correctness_query)
 
-		# print(tabulate(cursor.fetchall(), headers=headers, tablefmt='orgtbl'))
+        try:
+            self.conn.execute(
+                "ALTER TABLE record_metrics ADD COLUMN correctness;")
+        except sqlite3.OperationalError:
+            # print("column already exists, do nothing")
+            pass
 
+        self.conn.execute("UPDATE record_metrics SET correctness = ( SELECT record_correctness.correctness FROM record_correctness WHERE record_correctness.primary_key = record_metrics.primary_key AND record_correctness.db_name = record_metrics.db_name AND record_correctness.table_name = record_metrics.table_name AND record_correctness.timestamp = record_metrics.timestamp) WHERE primary_key IN (SELECT primary_key FROM record_correctness) AND db_name IN (SELECT db_name FROM record_correctness) AND table_name IN (SELECT table_name FROM record_correctness) AND timestamp IN (SELECT timestamp FROM record_correctness);")
+        self.conn.execute("DROP VIEW record_correctness;")
 
-	def generate_attribute_overall(self):
-		try:
-			self.conn.execute("ALTER TABLE attribute_metrics ADD COLUMN overall;")
-		except sqlite3.OperationalError:
-			# print("column already exists, do nothing")
-			pass
+        cursor = self.conn.execute("SELECT * FROM record_metrics")
 
-		attribute_overall_query = "UPDATE attribute_metrics SET overall = ("
+        headers = [description[0] for description in cursor.description]
 
-		for metric in self.metrics:
-			attribute_overall_query += metric + " + "
-			
-		attribute_overall_query = attribute_overall_query[:-2] + ") / " + str(len(self.metrics))
+    def generate_record_redundancy(self, db_name, table_name, primary_key, timestamp):
+        query = "SELECT * FROM " + table_name + " LIMIT 1"
+        cursor = self.conn.execute(query)
+        names = [description[0] for description in cursor.description]
 
-		self.conn.execute(attribute_overall_query)
-	
-	def generate_record_completeness(self, null_values, db_name, table_name, primary_key, timestamp):
-		query = "SELECT * FROM " + table_name + " LIMIT 1"
+        primary_key_index = 0
 
-		cursor = self.conn.execute(query)
+        for i in range(len(names)):
+            if names[i] == primary_key:
+                primary_key_index = i
+                break
 
-		names = [description[0] for description in cursor.description]
+        try:
+            self.conn.execute(
+                "ALTER TABLE record_metrics ADD COLUMN uniqueness;")
+        except sqlite3.OperationalError:
+            # print("column already exists, do nothing")
+            pass
 
-		attribute_null_values = {}
-		for i in range(len(names)):
-			attribute_null_values[names[i]] = null_values[i]
+        cursor = self.conn.execute("SELECT * FROM " + table_name)
 
-		record_completeness_query = "SELECT '"+ db_name + "' AS db_name, '" + table_name + "' AS table_name, " + primary_key +" AS primary_key, '" + timestamp + "' AS timestamp, (CAST("
+        row = cursor.fetchone()
 
-		for attribute in names:
-			attribute_null = attribute_null_values[attribute]
-			if(len(attribute_null) > 0):
-				record_completeness_query += "(CASE "
-				for null_value in attribute_null:
-					record_completeness_query += "WHEN " + attribute + " IS " + null_value + " THEN 0 "
-				record_completeness_query += "ELSE 1 END) + "
+        while (row != None):
+            query = "UPDATE record_metrics SET uniqueness = " + str(len(set(row)) * 100/len(row)) + " WHERE db_name = '" + db_name + \
+                "' AND table_name = '" + table_name + "' AND primary_key = '" + \
+                    str(row[primary_key_index]) + \
+                "' AND timestamp = '" + timestamp + "';"
+            self.conn.execute(query)
+            row = cursor.fetchone()
 
-		record_completeness_query = record_completeness_query[:-2]
-		record_completeness_query += "AS FLOAT) * 100 / " + str(len(names)) + ") AS 'completeness' FROM " + table_name
-		record_completeness_query = "CREATE VIEW record_completeness AS " + record_completeness_query
+        cursor = self.conn.execute("SELECT * FROM record_metrics")
 
-		self.conn.execute(record_completeness_query)
+        headers = [description[0] for description in cursor.description]
 
-		try:
-			self.conn.execute("ALTER TABLE record_metrics ADD COLUMN completeness;")
-		except sqlite3.OperationalError:
-			# print("column already exists, do nothing")
-			pass
+    def generate_record_overall(self):
+        try:
+            self.conn.execute("ALTER TABLE record_metrics ADD COLUMN overall;")
+        except sqlite3.OperationalError:
+            # print("column already exists, do nothing")
+            pass
 
-		self.conn.execute("UPDATE record_metrics SET completeness = ( SELECT record_completeness.completeness FROM record_completeness WHERE record_completeness.primary_key = record_metrics.primary_key AND record_completeness.db_name = record_metrics.db_name AND record_completeness.table_name = record_metrics.table_name AND record_completeness.timestamp = record_metrics.timestamp) WHERE primary_key IN (SELECT primary_key FROM record_completeness) AND db_name IN (SELECT db_name FROM record_completeness) AND table_name IN (SELECT table_name FROM record_completeness) AND timestamp IN (SELECT timestamp FROM record_completeness);")
-		self.conn.execute("DROP VIEW record_completeness;")
+        record_overall_query = "UPDATE record_metrics SET overall = ("
 
-		cursor = self.conn.execute("SELECT * FROM record_metrics")
+        for metric in self.metrics:
+            record_overall_query += metric + " + "
 
-		headers = [description[0] for description in cursor.description]
+        record_overall_query = record_overall_query[:-2] + ") / " + str(len(self.metrics))
 
-		# print(tabulate(cursor.fetchall()[:20], headers=headers, tablefmt='orgtbl'))
+        self.conn.execute(record_overall_query)
 
-	def generate_record_correctness(self, constraints, db_name, table_name, primary_key, timestamp):
-		query = "SELECT * FROM " + table_name + " LIMIT 1"
-		cursor = self.conn.execute(query)
-		names = [description[0] for description in cursor.description]
+    def get_metric_tables(self) -> tuple([pd.DataFrame, pd.DataFrame]):
 
-		attribute_constraint = {}
-		for i in range(len(names)):
-			attribute_constraint[names[i]] = constraints[i]
+        attribute_metric_table = pd.read_sql_query(
+            "SELECT * FROM attribute_metrics", self.conn)
+        record_metric_table = pd.read_sql_query(
+            "SELECT * FROM record_metrics", self.conn)
 
-		record_correctness_query = "SELECT '"+ db_name + "' AS db_name, '" + table_name + "' AS table_name, " + primary_key +" AS primary_key, '" + timestamp + "' AS timestamp, (CAST("
-
-		for attribute in names:
-			attribute_constraints = attribute_constraint[attribute]
-			if (len(attribute_constraint) > 0):
-				record_correctness_query += "(CASE "
-				for constraint in attribute_constraints:
-					record_correctness_query += "WHEN " + attribute + " " + constraint + " THEN 1 "
-				record_correctness_query += "ELSE 0 END) + "
-
-		record_correctness_query = record_correctness_query[:-2]
-		record_correctness_query += "AS FLOAT) * 100 / " + str(len(names)) + ") AS 'correctness' FROM " + table_name
-		record_correctness_query = "CREATE VIEW record_correctness AS " + record_correctness_query
-
-		cursor = self.conn.execute(record_correctness_query)
-
-		try:
-			self.conn.execute("ALTER TABLE record_metrics ADD COLUMN correctness;")
-		except sqlite3.OperationalError:
-			# print("column already exists, do nothing")
-			pass
-
-		self.conn.execute("UPDATE record_metrics SET correctness = ( SELECT record_correctness.correctness FROM record_correctness WHERE record_correctness.primary_key = record_metrics.primary_key AND record_correctness.db_name = record_metrics.db_name AND record_correctness.table_name = record_metrics.table_name AND record_correctness.timestamp = record_metrics.timestamp) WHERE primary_key IN (SELECT primary_key FROM record_correctness) AND db_name IN (SELECT db_name FROM record_correctness) AND table_name IN (SELECT table_name FROM record_correctness) AND timestamp IN (SELECT timestamp FROM record_correctness);")
-		self.conn.execute("DROP VIEW record_correctness;")
-
-		cursor = self.conn.execute("SELECT * FROM record_metrics")
-
-		headers = [description[0] for description in cursor.description]
-
-		# print(tabulate(cursor.fetchall()[:20], headers=headers, tablefmt='orgtbl'))
-
-	def generate_record_redundancy(self, db_name, table_name, primary_key, timestamp):
-		query = "SELECT * FROM " + table_name + " LIMIT 1"
-		cursor = self.conn.execute(query)
-		names = [description[0] for description in cursor.description]
-
-		primary_key_index = 0
-
-		for i in range(len(names)):
-			if names[i] == primary_key:
-				primary_key_index = i
-				break
-
-		try:
-			self.conn.execute("ALTER TABLE record_metrics ADD COLUMN uniqueness;")
-		except sqlite3.OperationalError:
-			# print("column already exists, do nothing")
-			pass
-
-		cursor = self.conn.execute("SELECT * FROM " + table_name)
-
-		row = cursor.fetchone()
-
-		while(row != None):
-			query = "UPDATE record_metrics SET uniqueness = " + str( len(set(row)) * 100/len(row)) + " WHERE db_name = '" + db_name + "' AND table_name = '" + table_name + "' AND primary_key = '" + str(row[primary_key_index]) + "' AND timestamp = '" + timestamp + "';"
-			self.conn.execute(query)
-			row = cursor.fetchone()
-
-		cursor = self.conn.execute("SELECT * FROM record_metrics")
-
-		headers = [description[0] for description in cursor.description]
-
-		# print(tabulate(cursor.fetchall()[:20], headers=headers, tablefmt='orgtbl'))
-
-	def generate_record_overall(self):
-		try:
-			self.conn.execute("ALTER TABLE record_metrics ADD COLUMN overall;")
-		except sqlite3.OperationalError:
-			# print("column already exists, do nothing")
-			pass
-
-		record_overall_query = "UPDATE record_metrics SET overall = ("
-
-		for metric in self.metrics:
-			record_overall_query += metric + " + "
-			
-		record_overall_query = record_overall_query[:-2] + ") / " + str(len(self.metrics))
-
-		self.conn.execute(record_overall_query)
-		
-	def get_metric_tables(self) -> tuple([pd.DataFrame, pd.DataFrame]):
-		
-		attribute_metric_table = pd.read_sql_query("SELECT * FROM attribute_metrics",self.conn)
-		record_metric_table = pd.read_sql_query("SELECT * FROM record_metrics",self.conn)	
-
-		return (attribute_metric_table, record_metric_table)
+        return (attribute_metric_table, record_metric_table)
