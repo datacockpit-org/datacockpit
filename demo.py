@@ -82,6 +82,8 @@ INSERT INTO orders (user_id, product_id, quantity) VALUES
 # Setup database connection with SQL engine and log-file CSV
 if __name__ == "__main__":
     database_path = '/Users/YOURUSERNAME/mydatabase.db'
+    if database_path == '/Users/YOURUSERNAME/mydatabase.db':
+        print("WARNING: Have you checked changing your database path?")
     engine = create_engine(f'sqlite:///{database_path}')
 
     dcp_obj = DataCockpit(engine=engine,
@@ -95,9 +97,11 @@ if __name__ == "__main__":
     attribute_metric_table, record_metric_table = dcp_obj.get_quality()
     metadata_df, aggr_df, dataset_usage_df = dcp_obj.get_usage()
 
-    attribute_metric_json = attribute_metric_table.to_json('assets/data/attribute_metric.json')
-    record_metric_json = record_metric_table.to_json('assets/data/record_metric.json')
-    dataset_usage_json = dataset_usage_df.to_json('assets/data/dataset_usage.json')
+    attribute_metric_json = attribute_metric_table.to_json('assets/data/attribute_metric.json', orient="records")
+    record_metric_json = record_metric_table.to_json('assets/data/record_metric.json', orient="records")
+    dataset_usage_json = dataset_usage_df.to_json('assets/data/dataset_usage.json', orient="records")
+    engine.dispose()
+
 
 """
 5. Finally, check out the following tables generated in your database:
