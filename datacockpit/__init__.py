@@ -1,8 +1,3 @@
-# In-built libraries
-
-# Third-Party libraries
-
-# datacockpit imports
 from datacockpit.usage import Usage
 from datacockpit.quality import Quality
 import sqlalchemy

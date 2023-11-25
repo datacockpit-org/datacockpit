@@ -49,13 +49,24 @@ class Usage:
             df["period_type"] = "daily"
             df["period"] = df['timestamp'].apply(
                 lambda ts: datetime.fromtimestamp(ts).strftime("%Y-%m-%d"))
-            return df.groupby(["database", "dataset", "attribute", "query_type", "period"]).\
-                agg(count_queries=('query_id', 'nunique'))
+            result_df = df.groupby(["database", "dataset", "attribute", "query_type", "period"]).\
+                agg(count_queries=('query_id', 'nunique'),
+                    last_used=('timestamp', 'max'),
+                    unique_user_count=('user', 'nunique'))
         else:
             df["period_type"] = "unspecified"
             df["period"] = "unspecified"
-            return df.groupby(["database", "dataset", "attribute", "query_type", "period"]).\
-                agg(count_queries=('query_id', 'nunique'))
+            result_df = df.groupby(["database", "dataset", "attribute", "query_type", "period"]).\
+                agg(count_queries=('query_id', 'nunique'),
+                    last_used=('timestamp', 'max'),
+                    unique_user_count=('user', 'nunique'))
+
+        # Calculate the last-used for overall period if unspecified
+        if self.period_type != "daily":
+            result_df["last_used"] = df.groupby(["database", "dataset", "attribute", "query_type"]).\
+                agg(last_used=('timestamp', 'max'))
+
+        return result_df
 
 
     def generate_metadata(self, multiplier: float = None) -> \
