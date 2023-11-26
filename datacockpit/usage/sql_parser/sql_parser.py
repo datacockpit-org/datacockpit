@@ -95,25 +95,3 @@ def get_metadata_table(
     for subquery in subqueries[1:]:
         df = pd.concat([df,  _get_metadata_table(subquery)], axis=0)
     return df
-
-def get_metadata_tables(
-    sql_query: str,
-    extract_subqueries: bool = True):
-    """Get Pandas dataframe from the SQL query
-
-    :param sql_query: SQL query to parse
-    :param extract_subqueries: Whether to extract subqueries
-    :return: df with columns ["table", "attribute", "query_type"]
-    :rtype: pd.DataFrame
-    """
-    if not extract_subqueries:
-        return _get_metadata_table(sql_query)
-    subqueries = extract(query=sql_query)
-    if not subqueries:
-        return None
-    df = _get_metadata_table(subqueries[0])
-    for subquery in subqueries[1:]:
-        df = pd.concat([df,  _get_metadata_table(subquery)], axis=0)
-
-    return df
-

@@ -1,4 +1,6 @@
 import sqlalchemy
+from sqlalchemy import text
+
 import sqlite3
 import csv
 from tabulate import tabulate
@@ -18,25 +20,30 @@ class Quality:
 
 		print("Please wait. This might take a few minutes")
 
-		self.conn.execute("DROP TABLE attribute_metrics")
-		self.conn.execute("DROP TABLE record_metrics")
-		
+		self.conn.execute(text("DROP TABLE IF EXISTS attribute_metrics"))
+		self.conn.execute(text("DROP TABLE IF EXISTS record_metrics"))
+
 		#Create metric tables
-		self.conn.execute("CREATE TABLE IF NOT EXISTS attribute_metrics" + \
+		self.conn.execute(text("CREATE TABLE IF NOT EXISTS attribute_metrics" + \
 			"(db_name text, table_name text, attribute_name text, timestamp" + \
-			" timestamp, uniqueness, completeness, correctness, overall)")
-		self.conn.execute("CREATE TABLE IF NOT EXISTS record_metrics" + \
+			" timestamp, uniqueness float, completeness float, correctness float, overall float)"))
+		self.conn.execute(text("CREATE TABLE IF NOT EXISTS record_metrics" + \
 			"(db_name text, table_name text, primary_key text, timestamp" + \
-			" timestamp, uniqueness, completeness, correctness, overall)")
+			" timestamp, uniqueness float, completeness float, correctness float, overall float)"))
 
 		# Get a list of tables in the db
-		cursor = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
+		# cursor = self.conn.execute(text("SELECT name FROM sqlite_master WHERE type='table';"))
+		cursor = self.conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_type='BASE TABLE' AND table_schema='public';"
+))
 		tables = [x[0] for x in cursor.fetchall()]
 
 		# Remove metric tables from the list of tables to analyze
 		tables_to_ignore = ["attribute_metrics", "record_metrics", "dcp_metadata", "dcp_aggr", "dcp_dataset_usage"]
 		for table_to_ignore in tables_to_ignore:
-			tables.remove(table_to_ignore)
+			try:
+				tables.remove(table_to_ignore)
+			except:
+				pass
 
 		current_date_time = datetime.datetime.now()
 		timestamp = str(current_date_time)[:19]  # Get ts string with sql parseable format
@@ -89,8 +96,9 @@ class Quality:
 
 	def generate_attribute_metrics(self, db_name, constraints, tables, timestamp):
 		for table_name in tables:
-			query = "SELECT * FROM " + table_name + " LIMIT 1"
-			cursor = self.conn.execute(query)
+			query = "SELECT * FROM " + table_name + " LIMIT 1;"
+			cursor = self.conn.execute(text(query))
+			print(cursor.description)
 
 			# Get attribute names from the table
 			attribute_names = [description[0] for description in cursor.description]
@@ -169,7 +177,7 @@ class Quality:
 		attribute_null_values = {}
 		for i in range(len(attribute_names)):
 			attribute_null_values[attribute_names[i]] = null_values[i]
-		
+
 		logging.debug(attribute_names)
 
 
@@ -187,7 +195,7 @@ class Quality:
 
 		attribute_completeness_query = attribute_completeness_query[:-2]
 		attribute_completeness_query += " FROM " + table_name
-		
+
 		logging.debug(attribute_completeness_query)
 
         #Execute the query and fetch results into a variable
@@ -254,7 +262,7 @@ class Quality:
 		cursor = self.conn.execute("SELECT * FROM attribute_metrics")
 
         # print(tabulate(cursor.fetchall(), headers=['db_name', 'table_name', 'attribute_name', 'timestamp', 'completeness', 'correctness'], tablefmt='orgtbl'))
-	
+
 	def generate_attribute_redundancy(self, db_name, table_name, timestamp):
 		query = "SELECT * FROM " + table_name + " LIMIT 1"
 
@@ -307,11 +315,11 @@ class Quality:
 
 		for metric in self.metrics:
 			attribute_overall_query += metric + " + "
-			
+
 		attribute_overall_query = attribute_overall_query[:-2] + ") / " + str(len(self.metrics))
 
 		self.conn.execute(attribute_overall_query)
-	
+
 	def generate_record_completeness(self, null_values, db_name, table_name, primary_key, timestamp):
 		query = "SELECT * FROM " + table_name + " LIMIT 1"
 
@@ -438,14 +446,14 @@ class Quality:
 
 		for metric in self.metrics:
 			record_overall_query += metric + " + "
-			
+
 		record_overall_query = record_overall_query[:-2] + ") / " + str(len(self.metrics))
 
 		self.conn.execute(record_overall_query)
-		
+
 	def get_metric_tables(self) -> tuple([pd.DataFrame, pd.DataFrame]):
-		
+
 		attribute_metric_table = pd.read_sql_query("SELECT * FROM attribute_metrics",self.conn)
-		record_metric_table = pd.read_sql_query("SELECT * FROM record_metrics",self.conn)	
+		record_metric_table = pd.read_sql_query("SELECT * FROM record_metrics",self.conn)
 
 		return (attribute_metric_table, record_metric_table)
