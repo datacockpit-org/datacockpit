@@ -123,7 +123,7 @@ DataCockpit can be installed as a Python package and imported in your own awesom
 
 <br/>
 
-### Analysis
+## Analysis
 
 Look at [assets](https://github.com/datacockpit-org/datacockpit/tree/review/assets/notebooks) for
 examples of how to use the metrics obtained, such as visualizing the temporal trends in data
