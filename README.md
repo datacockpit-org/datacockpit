@@ -19,7 +19,7 @@ within a data lake and provisions two kinds of auxiliary information:
 ## Install
 DataCockpit is written in Python 3. Please ensure you have a Python 3 environment already installed.
 
-Installing DataPilot is as simple as making microwave popcorn! Just `pip install datacockpit` and then sit back and let it do the work while you put your feet up.
+Installing DataCockpit is as simple as making microwave popcorn! Just `pip install datacockpit` and then sit back and let it do the work while you put your feet up.
 
 <br/>
 
